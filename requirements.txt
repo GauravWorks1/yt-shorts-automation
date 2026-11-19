@@ -5,6 +5,9 @@ numpy>=1.24.0
 python-dotenv>=1.0.0
 requests>=2.31.0
 
+# Microsoft Edge Emotional TTS
+edge-tts>=7.0.0
+
 # YouTube Data API v3 & Google Authentication
 google-api-python-client>=2.100.0
 google-auth-oauthlib>=1.1.0

@@ -1,128 +1,160 @@
 """
-Voice & Audio Generation Engine for YouTube Shorts Automation.
-Supports ElevenLabs API (eleven_multilingual_v2) with emotional pacing settings,
-and falls back to Edge-TTS / gTTS when no API key is present.
+Edge Emotional TTS & Audio Generation Engine.
+Uses Microsoft Edge TTS (hi-IN-MadhurNeural, hi-IN-SwaraNeural, en-IN-PrabhatNeural)
+with per-line emotional modulation (rate, pitch, volume) and exact scene timing measurement.
 """
 
-import json
+import asyncio
 import os
 import subprocess
-import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
+import edge_tts
 import config
+
+# Emotion presets mapped to exact rate and pitch modulations
+EMOTION_PRESETS = {
+    "hook": {"rate": "+7%", "pitch": "+0Hz", "desc": "Curious Hook"},
+    "twist": {"rate": "+10%", "pitch": "+2Hz", "desc": "Comedic / Ironic Twist"},
+    "shout": {"rate": "+16%", "pitch": "+15Hz", "desc": "Annoyed / Excited Shout"},
+    "suspense": {"rate": "+5%", "pitch": "-3Hz", "desc": "Nervous / Dark Suspense"},
+    "snitch": {"rate": "+18%", "pitch": "+14Hz", "desc": "Fast & Wicked / Playful"},
+    "grumpy": {"rate": "+4%", "pitch": "-14Hz", "desc": "Deep Tapori / Authoritative"},
+    "revelation": {"rate": "+8%", "pitch": "+3Hz", "desc": "Shocking Revelation"},
+    "cta": {"rate": "+9%", "pitch": "+1Hz", "desc": "Urgent Outro & CTA"},
+    "neutral": {"rate": "+6%", "pitch": "+0Hz", "desc": "Standard Storytelling"}
+}
+
+DEFAULT_HINDI_VOICE = "hi-IN-MadhurNeural"
+DEFAULT_FEMALE_VOICE = "hi-IN-SwaraNeural"
+DEFAULT_ENGLISH_VOICE = "en-IN-PrabhatNeural"
 
 
 class VoiceEngine:
-    """Handles text-to-speech generation with high retention acoustic settings."""
+    """Generates expressive, emotionally modulated voiceovers using Edge-TTS."""
 
-    def __init__(self, api_key: Optional[str] = None, default_voice_id: Optional[str] = None):
-        self.api_key = api_key or config.ELEVENLABS_API_KEY
-        self.voice_id = default_voice_id or config.ELEVENLABS_DEFAULT_VOICE
+    def __init__(self, default_voice: str = DEFAULT_HINDI_VOICE):
+        self.default_voice = default_voice
+        self.ffmpeg = config.FFMPEG_EXE
 
-    def generate_voiceover(
+    def get_audio_duration(self, audio_file: Path) -> float:
+        """Measures exact duration in seconds using FFmpeg/ffprobe."""
+        cmd = [self.ffmpeg, "-i", str(audio_file)]
+        res = subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        for line in res.stderr.splitlines():
+            if "Duration" in line:
+                try:
+                    parts = line.split("Duration:")[1].split(",")[0].strip().split(":")
+                    return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+                except Exception:
+                    pass
+        return 5.0
+
+    async def _synth_line(self, text: str, voice: str, rate: str, pitch: str, out_path: Path):
+        communicate = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch)
+        await communicate.save(str(out_path))
+
+    def generate_emotional_line(
         self,
         text: str,
         output_path: Path,
-        voice_id: Optional[str] = None,
-        stability: float = 0.40,
-        similarity_boost: float = 0.85,
-        style: float = 0.35
-    ) -> Path:
+        emotion: str = "neutral",
+        voice: Optional[str] = None
+    ) -> float:
         """
-        Generates voiceover audio. If ElevenLabs API key is present, calls ElevenLabs.
-        Otherwise falls back to edge-tts or system synthesis.
+        Synthesizes a single emotional voice line and returns its exact duration in seconds.
         """
+        preset = EMOTION_PRESETS.get(emotion.lower(), EMOTION_PRESETS["neutral"])
+        selected_voice = voice or self.default_voice
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        vid = voice_id or self.voice_id
 
-        if self.api_key:
-            try:
-                print(f"[VoiceEngine] Synthesizing audio with ElevenLabs (Voice ID: {vid})...")
-                self._generate_elevenlabs(text, output_path, vid, stability, similarity_boost, style)
-                print(f"[VoiceEngine] Audio saved to {output_path}")
-                return output_path
-            except Exception as e:
-                print(f"[VoiceEngine] ElevenLabs API error: {e}. Falling back to offline/system TTS...")
+        asyncio.run(self._synth_line(
+            text=text,
+            voice=selected_voice,
+            rate=preset["rate"],
+            pitch=preset["pitch"],
+            out_path=output_path
+        ))
 
-        # Fallback to local / edge-tts
-        return self._generate_fallback_tts(text, output_path)
+        duration = self.get_audio_duration(output_path)
+        return duration
 
-    def _generate_elevenlabs(
+    def generate_scene_voiceovers(
         self,
-        text: str,
-        output_path: Path,
-        voice_id: str,
-        stability: float,
-        similarity_boost: float,
-        style: float
-    ):
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-        headers = {
-            "Accept": "audio/mpeg",
-            "Content-Type": "application/json",
-            "xi-api-key": self.api_key
-        }
-        payload = {
-            "text": text,
-            "model_id": "eleven_multilingual_v2",
-            "voice_settings": {
-                "stability": stability,
-                "similarity_boost": similarity_boost,
-                "style": style,
-                "use_speaker_boost": True
-            }
-        }
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            audio_bytes = resp.read()
-            with open(output_path, "wb") as f:
-                f.write(audio_bytes)
+        script: Dict,
+        output_dir: Path
+    ) -> Tuple[Path, List[Dict]]:
+        """
+        Generates individual audio lines for each scene in the script using
+        emotional voice modulation, measures exact durations, and merges into
+        a master voiceover track.
+        """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        scenes = script.get("scenes", [])
+        
+        # Emotion progression across 5-stage heartbeat engine
+        default_emotions = ["hook", "suspense", "twist", "revelation", "cta"]
+        updated_scenes = []
+        audio_clip_paths = []
 
-    def _generate_fallback_tts(self, text: str, output_path: Path) -> Path:
-        """Generates synthetic audio via edge-tts or Windows PowerShell SAPI."""
-        print("[VoiceEngine] Using Windows Speech API / local synthesizer fallback...")
-        wav_path = output_path.with_suffix(".wav")
+        print(f"[VoiceEngine] Synthesizing {len(scenes)} scenes with Edge Emotional TTS ({self.default_voice})...")
 
-        # Clean text for PowerShell string
-        safe_text = text.replace('"', '""').replace("'", "''")
-        ps_script = f"""
-Add-Type -AssemblyName System.Speech
-$speak = New-Object System.Speech.Synthesis.SpeechSynthesizer
-$speak.Rate = 1
-$speak.SetOutputToWaveFile('{str(wav_path)}')
-$speak.Speak('{safe_text}')
-$speak.Dispose()
-"""
-        cmd = ["powershell", "-NoProfile", "-Command", ps_script]
-        subprocess.run(cmd, check=True)
+        for idx, sc in enumerate(scenes):
+            emotion = sc.get("emotion") or (default_emotions[idx] if idx < len(default_emotions) else "neutral")
+            line_audio = output_dir / f"scene_{idx + 1:02d}_vo.mp3"
+            narration = sc.get("narration", "")
 
-        # Convert wav to mp3 via ffmpeg if ffmpeg is available
-        if output_path.suffix.lower() == ".mp3" and os.path.exists(config.FFMPEG_EXE):
-            conv_cmd = [
-                config.FFMPEG_EXE, "-y",
-                "-i", str(wav_path),
-                "-codec:a", "libmp3lame",
-                "-qscale:a", "2",
-                str(output_path)
-            ]
-            subprocess.run(conv_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if wav_path.exists():
-                wav_path.unlink()
-            return output_path
+            # Generate line audio
+            dur = self.generate_emotional_line(
+                text=narration,
+                output_path=line_audio,
+                emotion=emotion,
+                voice=sc.get("voice") or self.default_voice
+            )
 
-        return wav_path
+            # Update scene with exact measured duration
+            sc_copy = sc.copy()
+            sc_copy["dur"] = round(dur, 2)
+            sc_copy["audio_path"] = str(line_audio)
+            sc_copy["emotion"] = emotion
+            updated_scenes.append(sc_copy)
+            audio_clip_paths.append(line_audio)
+
+            print(f"  [{idx + 1}/{len(scenes)}] [{emotion.upper()}] ({dur:.2f}s): {narration[:45]}...")
+
+        # Concat all audio clips into a master voiceover track
+        master_audio = output_dir / "master_voiceover.mp3"
+        concat_txt = output_dir / "audio_concat.txt"
+        with open(concat_txt, "w", encoding="utf-8") as f:
+            for p in audio_clip_paths:
+                f.write(f"file '{p.name}'\n")
+
+        cmd = [
+            self.ffmpeg, "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_txt),
+            "-c", "copy",
+            str(master_audio)
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(f"[VoiceEngine] Master voiceover assembled: {master_audio} (Total {sum(s['dur'] for s in updated_scenes):.2f}s)")
+
+        return master_audio, updated_scenes
 
 
 if __name__ == "__main__":
-    engine = VoiceEngine()
-    test_out = config.OUTPUT_DIR / "test_voice.mp3"
-    print("Testing VoiceEngine...")
-    engine.generate_voiceover("Welcome to YouTube Shorts Automation!", test_out)
-    print("Audio file exists:", test_out.exists())
+    v_engine = VoiceEngine()
+    test_script = {
+        "scenes": [
+            {"narration": "क्या आप सिर्फ एक कदम चलकर टाइम ट्रैवल कर सकते हैं?!", "emotion": "hook"},
+            {"narration": "चीन और अफगानिस्तान के बॉर्डर पर दुनिया की सबसे खतरनाक बर्फीली पहाड़ियां हैं!", "emotion": "suspense"},
+            {"narration": "सिर्फ एक कदम और आप साढ़े तीन घंटे पास्ट में चले जाएंगे!", "emotion": "revelation"},
+            {"narration": "क्या आप ऐसे टाइमज़ोन में रह सकते हैं? कमेंट में बताओ!", "emotion": "cta"}
+        ]
+    }
+    out_dir = config.OUTPUT_DIR / "edge_tts_test"
+    master, scenes = v_engine.generate_scene_voiceovers(test_script, out_dir)
+    print("Test successful. Master audio created:", master.exists())

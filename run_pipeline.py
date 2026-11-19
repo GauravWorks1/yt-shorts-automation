@@ -1,7 +1,7 @@
 """
 Master Pipeline Runner for YouTube Shorts Automation.
 Orchestrates end-to-end execution:
-Topic -> Script -> Metadata -> Audio -> Subtitles -> Thumbnail -> Video Render -> Flow / YouTube Upload.
+Topic -> Script -> Metadata -> Edge Emotional Audio -> Subtitles -> Thumbnail -> Signature Video Render -> Flow / YouTube Upload.
 """
 
 import argparse
@@ -31,10 +31,11 @@ def run_automation_pipeline(
     niche: str = None,
     upload: bool = False,
     privacy: str = "public",
-    dispatch_flow: bool = False
+    dispatch_flow: bool = False,
+    voice: str = "hi-IN-MadhurNeural"
 ):
     print("=" * 70)
-    print("🎬 YOUTUBE SHORTS AUTOMATION PIPELINE INITIALIZED")
+    print("🎬 YOUTUBE SHORTS AUTOMATION PIPELINE (EDGE EMOTIONAL TTS + SIGNATURE MOTION)")
     print("=" * 70)
 
     # 1. Topic Generation
@@ -53,72 +54,75 @@ def run_automation_pipeline(
     print("\n[2/7] Generating 5-Stage High-Completion Script...")
     script_engine = ScriptEngine()
     script = script_engine.generate_script(topic)
-    print(f"📝 Script generated with {len(script.get('scenes', []))} scenes ({script.get('total_duration')}s)")
+    print(f"📝 Script generated with {len(script.get('scenes', []))} scenes")
 
-    # 3. Metadata Generation
-    print("\n[3/7] Generating viral metadata (Title, Description, Tags, Pinned Comment)...")
+    job_slug = topic.get("id", "shorts_job")
+    job_dir = config.OUTPUT_DIR / job_slug
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    # 3. Edge Emotional Voiceover Synthesis (measures exact per-scene durations!)
+    print(f"\n[3/7] Synthesizing Edge Emotional TTS ({voice})...")
+    voice_engine = VoiceEngine(default_voice=voice)
+    master_audio, updated_scenes = voice_engine.generate_scene_voiceovers(
+        script=script,
+        output_dir=job_dir
+    )
+    script["scenes"] = updated_scenes
+    total_audio_dur = sum(s["dur"] for s in updated_scenes)
+    script["total_duration"] = total_audio_dur
+
+    # 4. Metadata Generation
+    print("\n[4/7] Generating viral metadata (Title, Description, Tags, Pinned Comment)...")
     metadata = MetadataEngine.generate_metadata(topic, script)
     print(f"🏷️  Title: {metadata['title']}")
     print(f"🔑 Tags: {', '.join(metadata['tags'][:5])}...")
 
-    # Save manifest
-    job_slug = topic.get("id", "shorts_job")
-    manifest_file = config.OUTPUT_DIR / f"{job_slug}_manifest.json"
+    manifest_file = job_dir / f"{job_slug}_manifest.json"
     with open(manifest_file, "w", encoding="utf-8") as f:
         json.dump({"topic": topic, "script": script, "metadata": metadata}, f, indent=2)
 
-    # 4. Voiceover Synthesis
-    print("\n[4/7] Synthesizing high-retention voiceover audio...")
-    voice_engine = VoiceEngine()
-    audio_file = config.OUTPUT_DIR / f"{job_slug}_voiceover.mp3"
-    voice_engine.generate_voiceover(
-        text=script.get("full_voiceover_text", ""),
-        output_path=audio_file
-    )
-
     # 5. Subtitle Generation
-    print("\n[5/7] Generating formatted ASS subtitles...")
-    ass_file = config.OUTPUT_DIR / f"{job_slug}_subtitles.ass"
+    print("\n[5/7] Generating formatted ASS subtitles synchronized to cuts...")
+    ass_file = job_dir / f"{job_slug}_subtitles.ass"
     SubtitlesGenerator.generate_ass(script, ass_file)
 
     # 6. Thumbnail Generation
     print("\n[6/7] Creating High-CTR dual-text thumbnail...")
     thumb_engine = ThumbnailEngine()
-    thumb_file = config.OUTPUT_DIR / f"{job_slug}_thumbnail.jpg"
+    thumb_file = job_dir / f"{job_slug}_thumbnail.jpg"
     first_scene = script["scenes"][0]
     last_scene = script["scenes"][-1]
     thumb_engine.generate_thumbnail(
         top_text=first_scene.get("top_text", topic.get("title")),
         bottom_text=last_scene.get("bottom_text", "WATCH TILL END!"),
         output_path=thumb_file,
-        badge_text="OFFICIAL TRUTH"
+        badge_text="VIRAL TRUTH"
     )
 
-    # 7. Video Rendering or Google Flow Dispatch
-    print("\n[7/7] Assembling final YouTube Short...")
-    video_file = config.OUTPUT_DIR / f"{job_slug}_final.mp4"
+    # 7. Signature Video Rendering
+    print(f"\n[7/7] Assembling signature Ken Burns Short ({total_audio_dur:.2f}s)...")
+    video_file = job_dir / f"{job_slug}_master.mp4"
 
     if dispatch_flow:
-        print("[Pipeline] Dispatching video generation to Google Flow...")
+        print("[Pipeline] Dispatching video generation prompts to Google Flow...")
         flow = GoogleFlowConnector()
         flow_job = flow.dispatch_flow_job(script)
         print(f"Google Flow status: {flow_job}")
 
-    # Render local production video with Ken Burns and burned subtitles
     renderer = VideoRenderer()
     renderer.render_short(
         script=script,
-        voiceover_audio=audio_file,
+        voiceover_audio=master_audio,
         subtitles_ass=ass_file,
         output_video=video_file
     )
 
     print("\n" + "=" * 70)
     print("✅ VIDEO PRODUCTION COMPLETED!")
-    print(f"📹 Video: {video_file}")
+    print(f"📹 Master Video: {video_file}")
     print(f"🖼️ Thumbnail: {thumb_file}")
     print(f"📄 Subtitles: {ass_file}")
-    print(f"🎵 Audio: {audio_file}")
+    print(f"🎵 Master Audio: {master_audio}")
     print("=" * 70)
 
     # 8. Optional YouTube Upload
@@ -145,6 +149,7 @@ def main():
     parser = argparse.ArgumentParser(description="Autonomous YouTube Shorts Generator & Uploader")
     parser.add_argument("--topic", type=str, default="auto", help="Topic seed, title prompt, or 'auto'")
     parser.add_argument("--language", type=str, default="hinglish", help="Language: hinglish, hindi, or english")
+    parser.add_argument("--voice", type=str, default="hi-IN-MadhurNeural", help="Edge TTS Voice (e.g. hi-IN-MadhurNeural, hi-IN-SwaraNeural, en-IN-PrabhatNeural)")
     parser.add_argument("--niche", type=str, default=None, help="Specific niche filter")
     parser.add_argument("--upload", action="store_true", help="Automatically upload to YouTube after rendering")
     parser.add_argument("--privacy", type=str, default="public", choices=["public", "unlisted", "private"])
@@ -154,6 +159,7 @@ def main():
     run_automation_pipeline(
         topic_seed=args.topic,
         language=args.language,
+        voice=args.voice,
         niche=args.niche,
         upload=args.upload,
         privacy=args.privacy,
