@@ -1,0 +1,41 @@
+# Environment & Credentials
+.env
+client_secrets.json
+token.pickle
+credentials.json
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Node & Package managers
+node_modules/
+
+# Generated Media Outputs & Temp Caches
+output/
+temp/
+*.mp4
+*.wav
+*.mp3
+*.aac
+*.avi
+*.mkv
+*.webm
+
+# Large historical raw wav/mp3 in workspace
+s*_*.wav
+s*.wav
+test_audio.wav
+long vid*
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
